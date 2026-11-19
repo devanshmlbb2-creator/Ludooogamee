@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pink Ludo ✨</title>
+  <link rel="stylesheet" href="cute.css" />
+</head>
+<body>
+  <div class="app">
+    <h1>🎀 PINK LUDO 🎀</h1>
+
+    <div id="lobby" class="card">
+      <input id="playerName" type="text" placeholder="Your cute nickname ✨" maxlength="20" />
+      <div class="lobby-actions">
+        <button id="createBtn">Create Room 💖</button>
+        <input id="roomCodeInput" type="text" placeholder="4-digit code" maxlength="6" />
+        <button id="joinBtn">Join 🌸</button>
+      </div>
+      <p id="lobbyStatus" class="status"></p>
+    </div>
+
+    <div id="gameArea" class="hidden">
+      <div class="top-bar">
+        <span>Room: <strong id="roomLabel">-</strong></span>
+        <span>You: <strong id="youLabel">-</strong></span>
+        <span>Turn: <strong id="turnLabel">-</strong></span>
+      </div>
+
+      <div class="board-wrapper">
+        <div id="board" class="board"></div>
+        <div class="controls">
+          <div class="dice-stage">
+            <div id="diceBox" class="dice">🎲</div>
+          </div>
+          <button id="rollBtn">Roll Dice ✨</button>
+          <p class="hint">Tap a glowing bunny token to hop!</p>
+          <p id="gameStatus" class="status"></p>
+          <ul id="playerList" class="player-list"></ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const NAMES = ["Strawberry", "Matcha", "Peach", "Lavender"];
+    const HEX = ["#ff4d8d", "#ff85b3", "#ffb3c6", "#c77dff"];
+    const FACES = ["🎲", "⚀", "⚁", "⚂", "⚃", "⚄", "⚅"];
+    const TRACK = [
+      [6,1],[6,2],[6,3],[6,4],[6,5],[5,6],[4,6],[3,6],[2,6],[1,6],[0,6],[0,7],[0,8],
+      [1,8],[2,8],[3,8],[4,8],[5,8],[6,9],[6,10],[6,11],[6,12],[6,13],[6,14],[7,14],[8,14],
+      [8,13],[8,12],[8,11],[8,10],[8,9],[9,8],[10,8],[11,8],[12,8],[13,8],[14,8],[14,7],[14,6],
+      [13,6],[12,6],[11,6],[10,6],[9,6],[8,5],[8,4],[8,3],[8,2],[8,1],[8,0],[7,0],[6,0]
+    ];
+    const START = [0, 13, 26, 39];
+    const SAFE = new Set(["6,1","2,6","1,8","6,12","8,13","12,8","13,6","8,2"]);
+    const STRETCH = [
+      [[7,1],[7,2],[7,3],[7,4],[7,5],[7,6]],
+      [[1,7],[2,7],[3,7],[4,7],[5,7],[6,7]],
+      [[7,13],[7,12],[7,11],[7,10],[7,9],[7,8]],
+      [[13,7],[12,7],[11,7],[10,7],[9,7],[8,7]]
+    ];
+    const YARDS = [
+      [[1,1],[1,4],[4,1],[4,4]],
+      [[1,10],[1,13],[4,10],[4,13]],
+      [[10,10],[10,13],[13,10],[13,13]],
+      [[10,1],[10,4],[13,1],[13,4]]
+    ];
+
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${proto}//${location.host}/ws`);
+    let mySlot = -1, myColor = -1, rolling = false;
+
+    const boardEl = document.getElementById("board");
+    const diceEl = document.getElementById("diceBox");
+    const cells = [];
+
+    for (let r = 0; r < 15; r++) {
+      for (let c = 0; c < 15; c++) {
+        const cell = document.createElement("div");
+        cell.className = "cell";
+        if (r < 6 && c < 6) cell.classList.add("yard-0");
+        else if (r < 6 && c > 8) cell.classList.add("yard-1");
+        else if (r > 8 && c > 8) cell.classList.add("yard-2");
+        else if (r > 8 && c < 6) cell.classList.add("yard-3");
+        else if (r >= 6 && r <= 8 && c >= 6 && c <= 8) cell.classList.add("center-home");
+        if (SAFE.has(`${r},${c}`)) cell.classList.add("safe");
+        if (r === 7 && c >= 1 && c <= 5) cell.classList.add("path-0");
+        if (c === 7 && r >= 1 && r <= 5) cell.classList.add("path-1");
+        if (r === 7 && c >= 9 && c <= 13) cell.classList.add("path-2");
+        if (c === 7 && r >= 9 && r <= 13) cell.classList.add("path-3");
+        boardEl.appendChild(cell);
+        cells.push(cell);
+      }
+    }
+
+    const getCoord = (col, idx, pos) =>
+      pos === -1 ? YARDS[col][idx] :
+      pos <= 50 ? TRACK[(START[col] + pos) % 52] :
+      pos <= 56 ? STRETCH[col][pos - 51] : [7, 7];
+
+    function animateDice(val, done) {
+      if (!val) { diceEl.textContent = "🎲"; done(); return; }
+      rolling = true;
+      diceEl.classList.add("rolling");
+      let ticks = 0;
+      const iv = setInterval(() => {
+        diceEl.textContent = FACES[Math.floor(Math.random() * 6) + 1];
+        if (++ticks >= 9) {
+          clearInterval(iv);
+          diceEl.classList.remove("rolling");
+          diceEl.textContent = FACES[val];
+          rolling = false;
+          done();
+        }
+      }, 55);
+    }
+
+    function render(s) {
+      const updateBoard = () => {
+        document.getElementById("turnLabel").textContent = NAMES[s.turn] || "-";
+        document.getElementById("gameStatus").textContent = s.msg || "";
+        const myTurn = s.turn === mySlot && s.winner === -1;
+        document.getElementById("rollBtn").disabled = !myTurn || Boolean(s.rolled);
+
+        const list = document.getElementById("playerList");
+        list.innerHTML = "";
+        s.players.forEach(p => {
+          const li = document.createElement("li");
+          li.textContent = `${NAMES[p.color]} • ${p.name}`;
+          li.style.borderLeftColor = HEX[p.color];
+          list.appendChild(li);
+        });
+
+        document.querySelectorAll(".token").forEach(el => el.remove());
+        s.players.forEach(p => {
+          p.tokens.forEach((pos, tIdx) => {
+            const [r, c] = getCoord(p.color, tIdx, pos);
+            const tok = document.createElement("div");
+            tok.className = "token";
+            tok.style.background = HEX[p.color];
+            tok.textContent = "🐰";
+            const movable = myTurn && s.rolled && p.slot === mySlot &&
+              ((pos === -1 && s.dice === 6) || (pos >= 0 && pos + s.dice <= 57));
+            if (movable) {
+              tok.classList.add("movable");
+              tok.onclick = () => ws.send(`MOVE ${tIdx}`);
+            }
+            cells[r * 15 + c].appendChild(tok);
+          });
+        });
+      };
+
+      if (s.dice && !rolling) animateDice(s.dice, updateBoard);
+      else { if (!s.dice) diceEl.textContent = "🎲"; updateBoard(); }
+    }
+
+    ws.onmessage = e => {
+      const d = JSON.parse(e.data);
+      if (d.type === "joined") {
+        mySlot = d.slot; myColor = d.color;
+        document.getElementById("lobby").classList.add("hidden");
+        document.getElementById("gameArea").classList.remove("hidden");
+        document.getElementById("roomLabel").textContent = d.room;
+        document.getElementById("youLabel").textContent = NAMES[myColor];
+      } else if (d.type === "state") render(d);
+      else if (d.type === "error") document.getElementById("lobbyStatus").textContent = d.msg;
+    };
+
+    document.getElementById("createBtn").onclick = () =>
+      ws.send(`CREATE ${document.getElementById("playerName").value.trim() || "Princess"}`);
+
+    document.getElementById("joinBtn").onclick = () => {
+      const code = document.getElementById("roomCodeInput").value.trim();
+      if (code) ws.send(`JOIN ${code} ${document.getElementById("playerName").value.trim() || "Bestie"}`);
+    };
+
+    document.getElementById("rollBtn").onclick = () => {
+      document.getElementById("rollBtn").disabled = true;
+      ws.send("ROLL");
+    };
+  </script>
+</body>
+</html>
